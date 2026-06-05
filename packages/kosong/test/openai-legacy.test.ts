@@ -478,6 +478,33 @@ describe('OpenAILegacyChatProvider', () => {
       expect(provider).not.toBe(original);
       expect(body['max_tokens']).toBe(1024);
     });
+
+    it.each(['gpt-5', 'gpt-5-codex', 'o3'])(
+      'withMaxCompletionTokens sets max_completion_tokens for %s',
+      async (model) => {
+        const provider = createProvider({ model }).withMaxCompletionTokens(1024);
+        const history: Message[] = [
+          { role: 'user', content: [{ type: 'text', text: 'Hi' }], toolCalls: [] },
+        ];
+        const body = await captureRequestBody(provider, '', [], history);
+
+        expect(body['max_completion_tokens']).toBe(1024);
+        expect(body['max_tokens']).toBeUndefined();
+      },
+    );
+
+    it('keeps max_tokens for OpenAI-compatible non-OpenAI reasoning models', async () => {
+      const provider = createProvider({ model: 'deepseek-reasoner' }).withMaxCompletionTokens(
+        1024,
+      );
+      const history: Message[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Hi' }], toolCalls: [] },
+      ];
+      const body = await captureRequestBody(provider, '', [], history);
+
+      expect(body['max_tokens']).toBe(1024);
+      expect(body['max_completion_tokens']).toBeUndefined();
+    });
   });
 
   describe('maxTokens option', () => {
@@ -689,6 +716,56 @@ describe('OpenAILegacyChatProvider', () => {
       const body = await captureRequestBody(provider, '', [], history);
 
       expect(body['reasoning_effort']).toBe('high');
+    });
+
+    it.each(['gpt-5.2', 'gpt-5.4', 'gpt-5.5', 'openai/gpt-5.5'])(
+      '.withThinking("xhigh") passes through for Chat Completions xhigh model %s',
+      async (model) => {
+        const provider = createProvider({ model }).withThinking('xhigh');
+        const history: Message[] = [
+          { role: 'user', content: [{ type: 'text', text: 'Think' }], toolCalls: [] },
+        ];
+        const body = await captureRequestBody(provider, '', [], history);
+
+        expect(body['reasoning_effort']).toBe('xhigh');
+        expect(provider.thinkingEffort).toBe('xhigh');
+      },
+    );
+
+    it.each(['gpt-5.1', 'gpt-5.4-mini', 'gpt-5.4-pro', 'kimi-k2.6', 'some-model'])(
+      '.withThinking("xhigh") clamps to high for Chat Completions model %s',
+      async (model) => {
+        const provider = createProvider({ model }).withThinking('xhigh');
+        const history: Message[] = [
+          { role: 'user', content: [{ type: 'text', text: 'Think' }], toolCalls: [] },
+        ];
+        const body = await captureRequestBody(provider, '', [], history);
+
+        expect(body['reasoning_effort']).toBe('high');
+        expect(provider.thinkingEffort).toBe('high');
+      },
+    );
+
+    it('.withThinking("max") uses xhigh only for Chat Completions xhigh models', async () => {
+      const history: Message[] = [
+        { role: 'user', content: [{ type: 'text', text: 'Think' }], toolCalls: [] },
+      ];
+
+      const supported = await captureRequestBody(
+        createProvider({ model: 'gpt-5.5' }).withThinking('max'),
+        '',
+        [],
+        history,
+      );
+      const unsupported = await captureRequestBody(
+        createProvider({ model: 'gpt-5.5-pro' }).withThinking('max'),
+        '',
+        [],
+        history,
+      );
+
+      expect(supported['reasoning_effort']).toBe('xhigh');
+      expect(unsupported['reasoning_effort']).toBe('high');
     });
   });
 

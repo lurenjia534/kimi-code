@@ -6,6 +6,8 @@ import {
   type ProviderConfig,
 } from '@moonshot-ai/kosong';
 
+import { applyKimiEnvSamplingParams, applyKimiEnvThinkingKeep } from '../kimi-env-params';
+
 import type { Agent } from '..';
 import { ErrorCodes, KimiError } from '../../errors';
 import type { AgentConfigData, AgentConfigUpdateData } from './types';
@@ -97,7 +99,13 @@ export class ConfigState {
   }
 
   get provider(): ChatProvider {
-    return createProvider(this.providerConfig);
+    // All provider-level request config is applied here so every request built
+    // from config.provider — the main loop AND full-history compaction — carries it:
+    //   - withThinking: preserve thinking during compaction (#464)
+    //   - sampling params: KIMI_MODEL_TEMPERATURE / KIMI_MODEL_TOP_P
+    //   - thinking.keep: KIMI_MODEL_THINKING_KEEP (only while thinking is on)
+    const provider = createProvider(this.providerConfig).withThinking(this.thinkingLevel);
+    return applyKimiEnvThinkingKeep(applyKimiEnvSamplingParams(provider), this.thinkingLevel);
   }
 
   get model(): string {
@@ -125,6 +133,10 @@ export class ConfigState {
 
   get modelCapabilities(): ModelCapability {
     return this.tryResolvedProviderConfig()?.modelCapabilities ?? UNKNOWN_CAPABILITY;
+  }
+
+  get maxOutputSize(): number | undefined {
+    return this.tryResolvedProviderConfig()?.maxOutputSize;
   }
 
   private get resolvedProviderConfig(): ResolvedRuntimeProvider | undefined {

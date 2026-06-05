@@ -111,7 +111,10 @@ export class CustomEditor extends Editor {
    * through so pi-tui's built-in history navigation runs.
    */
   public onUpArrowEmpty?: () => boolean;
+  public onDownArrowEmpty?: () => boolean;
   public onShiftTab?: () => void;
+  public connectedAbove = false;
+  public borderHighlighted = false;
   /**
    * Called when the user triggers "paste image" (Ctrl-V on Unix,
    * Alt-V on Windows — Ctrl-V is terminal-reserved there). Return
@@ -213,7 +216,9 @@ export class CustomEditor extends Editor {
     // overwrite it (e.g. plan-mode / slash-context highlight via
     // `editor.borderColor = chalk.hex(primary)`), so we route corners and
     // side bars through the same hook to stay in sync.
-    return wrapWithSideBorders(lines, (s) => this.borderColor(s));
+    return wrapWithSideBorders(lines, (s) => this.borderColor(s), {
+      connectedAbove: this.connectedAbove && !this.borderHighlighted,
+    });
   }
 
   override handleInput(data: string): void {
@@ -320,6 +325,12 @@ export class CustomEditor extends Editor {
       }
     }
 
+    if (matchesKey(normalized, Key.down)) {
+      if (this.getText().length === 0 && this.onDownArrowEmpty) {
+        if (this.onDownArrowEmpty()) return;
+      }
+    }
+
     if (matchesKey(normalized, Key.escape)) {
       if (this.hasAutocompleteActivity()) {
         this.cancelAutocompleteActivity();
@@ -335,6 +346,7 @@ export class CustomEditor extends Editor {
 
 /**
  * Return a copy of `line` with the first `/token` coloured using `hex`.
+ * For `/goal next manage`, also colour the command-path tokens.
  * `line` may already contain SGR escapes (cursor inverse, etc.); we
  * locate `/` via visible-index math so ANSI pass-through survives.
  * Returns `undefined` if no token is found.
@@ -357,12 +369,60 @@ export function highlightFirstSlashToken(line: string, hex: string): string | un
   }
   const visibleToken = visible.slice(slashIdx, endVisible);
   if (visibleToken.slice(1).includes('/')) return undefined;
-  const rawStart = mapVisibleIdxToRaw(line, slashIdx);
-  const rawEnd = mapVisibleIdxToRaw(line, endVisible);
-  const before = line.slice(0, rawStart);
-  const token = line.slice(rawStart, rawEnd);
-  const after = line.slice(rawEnd);
-  return before + chalk.hex(hex).bold(token) + after;
+  const ranges = [{ start: slashIdx, end: endVisible }];
+  if (visibleToken === '/goal') {
+    ranges.push(...goalCommandPathRanges(visible, endVisible));
+  }
+  return highlightVisibleRanges(line, ranges, hex);
+}
+
+function goalCommandPathRanges(
+  visible: string,
+  commandEnd: number,
+): Array<{ start: number; end: number }> {
+  const nextRange = readTokenRange(visible, commandEnd);
+  if (nextRange === null || visible.slice(nextRange.start, nextRange.end) !== 'next') {
+    return [];
+  }
+  const ranges = [nextRange];
+  const manageRange = readTokenRange(visible, nextRange.end);
+  if (manageRange !== null && visible.slice(manageRange.start, manageRange.end) === 'manage') {
+    ranges.push(manageRange);
+  }
+  return ranges;
+}
+
+function readTokenRange(
+  visible: string,
+  start: number,
+): { start: number; end: number } | null {
+  let tokenStart = start;
+  while (tokenStart < visible.length && isTokenSpace(visible[tokenStart])) tokenStart++;
+  if (tokenStart >= visible.length) return null;
+  let tokenEnd = tokenStart;
+  while (tokenEnd < visible.length && !isTokenSpace(visible[tokenEnd])) tokenEnd++;
+  return { start: tokenStart, end: tokenEnd };
+}
+
+function isTokenSpace(ch: string | undefined): boolean {
+  return ch === ' ' || ch === '\t';
+}
+
+function highlightVisibleRanges(
+  line: string,
+  ranges: Array<{ start: number; end: number }>,
+  hex: string,
+): string {
+  let out = '';
+  let rawCursor = 0;
+  for (const range of ranges) {
+    const rawStart = mapVisibleIdxToRaw(line, range.start);
+    const rawEnd = mapVisibleIdxToRaw(line, range.end);
+    out += line.slice(rawCursor, rawStart);
+    out += chalk.hex(hex).bold(line.slice(rawStart, rawEnd));
+    rawCursor = rawEnd;
+  }
+  return out + line.slice(rawCursor);
 }
 
 /**
@@ -398,13 +458,14 @@ export function injectPromptSymbol(line: string): string | undefined {
 export function wrapWithSideBorders(
   lines: string[],
   paint: (s: string) => string,
+  options: { readonly connectedAbove?: boolean } = {},
 ): string[] {
   let seenTop = false;
   return lines.map((line) => {
     const plain = stripSgr(line);
     if (plain.length > 0 && plain[0] === '─') {
-      const leftCorner = seenTop ? '╰' : '╭';
-      const rightCorner = seenTop ? '╯' : '╮';
+      const leftCorner = seenTop ? '╰' : options.connectedAbove === true ? '├' : '╭';
+      const rightCorner = seenTop ? '╯' : options.connectedAbove === true ? '┤' : '╮';
       seenTop = true;
       if (plain.length === 1) return paint(leftCorner);
       const middle = plain.slice(1, -1);

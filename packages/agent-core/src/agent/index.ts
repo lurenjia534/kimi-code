@@ -15,17 +15,13 @@ import {
 import type { EnabledPluginSessionStart } from '#/plugin';
 
 import type { McpConnectionManager } from '../mcp';
+import { FlagResolver, type ExperimentalFlagResolver } from '../flags';
 import type { PreparedSystemPromptContext, ResolvedAgentProfile } from '../profile';
 import type { ModelProvider } from '../session/provider-manager';
 import type { SessionGoalStore } from '../session/goal';
 import type { SessionSubagentHost } from '../session/subagent-host';
 import type { SkillRegistry } from '../skill';
 import { noopTelemetryClient, type TelemetryClient } from '../telemetry';
-import {
-  estimateTokens,
-  estimateTokensForMessages,
-  estimateTokensForTools,
-} from '../utils/tokens';
 import type { PromisableMethods } from '../utils/types';
 import { BackgroundManager, BackgroundTaskPersistence } from './background';
 import {
@@ -90,6 +86,7 @@ export interface AgentOptions {
   readonly telemetry?: TelemetryClient | undefined;
   readonly pluginSessionStarts?: readonly EnabledPluginSessionStart[];
   readonly appVersion?: string;
+  readonly experimentalFlags?: ExperimentalFlagResolver;
 }
 
 export class Agent {
@@ -109,6 +106,7 @@ export class Agent {
   readonly log: Logger;
   readonly telemetry: TelemetryClient;
   readonly appVersion?: string;
+  readonly experimentalFlags: ExperimentalFlagResolver;
 
   readonly blobStore: BlobStore | undefined;
   readonly records: AgentRecords;
@@ -146,6 +144,7 @@ export class Agent {
     this.appVersion = options.appVersion;
     this.log = options.log ?? log;
     this.telemetry = options.telemetry ?? noopTelemetryClient;
+    this.experimentalFlags = options.experimentalFlags ?? new FlagResolver();
 
     this.blobStore = options.homedir
       ? new BlobStore({ blobsDir: join(options.homedir, 'blobs') })
@@ -206,9 +205,12 @@ export class Agent {
 
   get llm(): KosongLLM {
     const model = this.config.model;
-    const provider = this.config.provider.withThinking(this.config.thinkingLevel);
+    // All provider-level request config (thinking, sampling params, thinking.keep)
+    // is applied in ConfigState.provider so compaction shares it. See get provider().
+    const provider = this.config.provider;
     const loopControl = this.kimiConfig?.loopControl;
     const completionBudgetConfig = resolveCompletionBudget({
+      maxOutputSize: this.config.maxOutputSize,
       reservedContextSize: loopControl?.reservedContextSize,
     });
     return new KosongLLM({
@@ -245,12 +247,7 @@ export class Agent {
     for (const message of history) {
       if (message.partial === true) partialMessageCount += 1;
     }
-    const requestMetadata: LlmRequestMetadata = {
-      estimatedInputTokens:
-        estimateTokens(systemPrompt) +
-        estimateTokensForMessages(history) +
-        estimateTokensForTools(tools),
-    };
+    const requestMetadata: LlmRequestMetadata = {};
     if (partialMessageCount > 0) {
       requestMetadata.partialMessageCount = partialMessageCount;
     }
@@ -387,6 +384,7 @@ export class Agent {
         }
         this.skills.activate(payload);
       },
+      startBtw: () => this.subagentHost!.startBtw(),
       getBackgroundOutput: (payload) => this.background.readOutput(payload.taskId, payload.tail),
       getContext: () => this.context.data(),
       getConfig: () => this.config.data(),
@@ -454,7 +452,6 @@ interface LlmRequestContextFields {
 }
 
 interface LlmRequestMetadata {
-  estimatedInputTokens: number;
   partialMessageCount?: number;
 }
 
